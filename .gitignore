@@ -1,0 +1,20 @@
+# Maven
+target/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+out/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets and local config (never commit these)
+.env
+*.env
+application-local.properties
+application-local.yml
+
+# Logs
+*.log
