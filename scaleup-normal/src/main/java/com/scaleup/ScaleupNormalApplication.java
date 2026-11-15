@@ -1,4 +1,4 @@
-package com.scaleup_normal.scaleup_normal;
+package com.scaleup;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

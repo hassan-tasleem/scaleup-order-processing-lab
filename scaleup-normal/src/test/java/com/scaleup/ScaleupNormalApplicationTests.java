@@ -1,4 +1,4 @@
-package com.scaleup_normal.scaleup_normal;
+package com.scaleup;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;

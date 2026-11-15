@@ -1,0 +1,1750 @@
+﻿SCALEUP-NORMAL ARCHITECTURE AND SOURCE SNAPSHOT
+Generated from the current scaleup-normal project. Local profile files and credentials are intentionally excluded.
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+Purpose: a synchronous, single-process baseline for the ScaleUp order-processing lab. It provides customer/product reads, PostgreSQL persistence, and lab-only admin, verification, and simulation controls. Payment and notification integrations are simulated abstractions. This baseline does not use Kafka or Redis.
+
+Technology: Java 21; Spring Boot 3.5.x; Spring MVC / embedded Tomcat; Spring Data JPA and Hibernate; JDBC for admin SQL; PostgreSQL; Flyway migrations; HikariCP; Jakarta Validation; Actuator and Micrometer; Maven.
+
+================================================================================
+2. ARCHITECTURE DESIGN
+================================================================================
+                         +---------------------------+
+                         | HTTP client / load test   |
+                         +-------------+-------------+
+                                       |
+                                       v
++----------------+       +-------------+-------------+       +-------------------+
+| JSON response  |<------| REST controllers          |------>| Global error map  |
+| response DTOs  |       | customer/product/admin    |       | common package    |
++-------+--------+       +-------------+-------------+       +-------------------+
+        ^                              |
+        |                              v
+        |                 +------------+-------------+
+        +-----------------| application services     |
+                          | customer/product/admin   |
+                          +------+-------------+-----+
+                                 |             |
+                  +--------------+             +------------------+
+                  v                                               v
+        +---------+----------+                          +---------+----------+
+        | Spring Data JPA    |                          | JdbcTemplate       |
+        | repositories       |                          | lab/admin queries  |
+        +---------+----------+                          +---------+----------+
+                  +---------------------+-------------------------+
+                                        v
+                           +------------+-------------+
+                           | PostgreSQL               |
+                           | schema from Flyway       |
+                           +--------------------------+
+
+Startup/schema path: ScaleupNormalApplication starts Spring Boot; datasource connects to PostgreSQL; Flyway applies versioned SQL migrations; Hibernate validates entity mappings against the migrated schema (ddl-auto=validate).
+
+Request path: Tomcat receives HTTP -> Spring MVC binds route/body/query parameters -> controller calls a service -> service uses a repository or JdbcTemplate inside transaction boundaries -> data is read/written in PostgreSQL -> controller serializes a response DTO as JSON. NotFoundException is converted by GlobalExceptionHandler into an HTTP 404 ApiError. Other exception types are not given custom mappings here.
+
+Runtime monitoring: Actuator exposes health, info, and metrics; Micrometer tags metrics with the application name and records HTTP request percentiles. Tomcat's MBean registry is enabled.
+
+Architectural boundary: this is a synchronous monolith with package-level domain organization, not independently deployed services. Current public domain read routes are GET /api/customers/{id} and GET /api/products/{id}. Admin routes are conditional on scaleup.admin.enabled: POST /api/admin/reset?profile=SMALL|STANDARD, GET /api/admin/verify, GET /api/admin/simulation, PUT /api/admin/simulation. There is no order creation REST controller in this project snapshot; order entities/repository represent persistence model used by the lab.
+
+================================================================================
+3. PACKAGE AND FILE MAP
+================================================================================
+com.scaleup: ScaleupNormalApplication.java — executable Spring Boot entry point and component scan root.
+
+com.scaleup.admin — guarded lab administration:
+AdminController.java exposes reset and verification routes; ResetService.java reseeds tables and analyzes them; VerifyService.java checks row counts, stock balances, product inventory, order items/totals and seed data; SeedProfile.java defines SMALL and STANDARD seed sizes; ResetResponse.java and VerifyResponse.java carry outputs.
+
+com.scaleup.common — cross-cutting HTTP errors:
+ApiError.java is the JSON error shape; NotFoundException.java is the domain lookup exception; GlobalExceptionHandler.java translates it to 404.
+
+com.scaleup.customer — customer read API and persistence:
+Customer.java entity; CustomerController.java route; CustomerService.java lookup logic; CustomerRepository.java JPA access; CustomerResponse.java API record.
+
+com.scaleup.inventory — inventory persistence and quantity lookup:
+Inventory.java entity; InventoryRepository.java JPA access; InventoryService.java available quantity lookup used by product responses.
+
+com.scaleup.notification — simulated notification boundary:
+NotificationSender.java interface; SimulatedNotificationSender.java lab implementation; NotificationFailedException.java failure representation.
+
+com.scaleup.order — order persistence model:
+Order.java and OrderItem.java entities; OrderStatus.java lifecycle values; OrderRepository.java JPA access.
+
+com.scaleup.payment — simulated payment boundary:
+PaymentGateway.java interface; SimulatedPaymentGateway.java lab implementation; PaymentOutcome.java result model.
+
+com.scaleup.product — product read API and persistence:
+Product.java entity; ProductController.java route; ProductService.java product/inventory composition; ProductRepository.java JPA access; ProductResponse.java API record.
+
+com.scaleup.simulation — configurable fault/workload behavior:
+SimulationConfig.java validated settings record; SimulationSettings.java thread-safe current settings/version; SimulationSupport.java shared simulation behavior; SimulationController.java guarded read/update endpoints.
+
+Resources: application.properties contains app/server/database/pool/JPA/Actuator settings; db/migration/V1__create_core_tables.sql defines the initial schema. application-local.properties is deliberately omitted from this snapshot because local profile files may contain credentials.
+
+Tests: src/test/java contains the Spring context smoke test and unit tests for the simulated payment and notification components.
+
+================================================================================
+4. DATABASE AND DOMAIN MODEL
+================================================================================
+Tables created by V1: customers, products, inventory, orders, order_items, payments, notifications. Customers and products use generated identity primary keys. Inventory uses product_id as its primary key and references products. Order items reference orders and products. Payments has a unique order_id (one payment row per order). Notifications reference orders. Database checks enforce valid quantities, amounts, and known status values.
+
+Order status values: PENDING, STOCK_RESERVED, PAID, CONFIRMED, PAYMENT_FAILED, CANCELLED. Payment values: SUCCESS, DECLINED, TIMEOUT, ERROR. Notification values: PENDING, SENT, FAILED.
+
+V1 intentionally omits the orders(customer_id,status) index, unique orders(idempotency_key), and unique notifications(order_id,type); migration comments identify these as experiment variables for later lab tasks.
+
+================================================================================
+5. CONFIGURATION AND RUNNING
+================================================================================
+application.properties sets scaleup-normal on port 8080, activates the local profile, connects to jdbc:postgresql://localhost:5432/scaleup_db, names the Hikari pool scaleup-pool with maximum size 10, enables Hibernate schema validation, disables open-in-view and SQL logging, and exposes health/info/metrics. Admin endpoints are enabled for the lab through scaleup.admin.enabled=true and should be disabled for non-lab deployments.
+
+Build/run from scaleup-normal: .\mvnw.cmd spring-boot:run (Windows) or ./mvnw spring-boot:run. Requires Java 21, PostgreSQL, and local datasource credentials. Maven tests live under src/test/java.
+
+================================================================================
+6. COMPLETE SOURCE FILE SNAPSHOT
+================================================================================
+Every current Java source file under src/main/java, non-local file under src/main/resources, test file under src/test, pom.xml, and README.md is included below with its repository-relative path.
+
+================================================================================
+FILE: scaleup-normal/pom.xml
+================================================================================
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>3.5.16</version>
+		<relativePath/>
+	</parent>
+
+	<groupId>com.scaleup</groupId>
+	<artifactId>scaleup-normal</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<name>scaleup-normal</name>
+	<description>ScaleUp baseline order processing system (Spring Boot + PostgreSQL, no Kafka or Redis)</description>
+
+	<properties>
+		<java.version>21</java.version>
+	</properties>
+
+	<dependencies>
+		<!-- REST APIs (embedded Tomcat, Spring MVC, JSON support) -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-web</artifactId>
+		</dependency>
+
+		<!-- Database access with JPA/Hibernate and Spring Data repositories -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
+
+		<!-- Request validation (@NotNull, @Min, @Valid) -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+
+		<!-- Health and metrics endpoints; brings Micrometer, the measuring library -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+
+		<!-- Versioned database schema scripts (Flyway) -->
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-core</artifactId>
+		</dependency>
+
+		<!-- PostgreSQL support for Flyway (a separate module since Flyway 10) -->
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+
+		<!-- PostgreSQL JDBC driver, needed only when the app runs -->
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<!-- JUnit and Spring test support, used only when tests run -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<!-- Packages the app as a runnable jar and provides mvn spring-boot:run -->
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+		</plugins>
+	</build>
+</project>
+
+================================================================================
+FILE: scaleup-normal/README.md
+================================================================================
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/admin/AdminController.java
+================================================================================
+package com.scaleup.admin;
+
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/admin")
+@ConditionalOnProperty(name = "scaleup.admin.enabled", havingValue = "true")
+public class AdminController {
+
+    private final ResetService resetService;
+    private final VerifyService verifyService;
+
+    public AdminController(ResetService resetService, VerifyService verifyService) {
+        this.resetService = resetService;
+        this.verifyService = verifyService;
+    }
+
+    @PostMapping("/reset")
+    public ResetResponse reset(@RequestParam SeedProfile profile) {
+        return resetService.reset(profile);
+    }
+
+    @GetMapping("/verify")
+    public VerifyResponse verify() {
+        return verifyService.verify();
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/admin/ResetResponse.java
+================================================================================
+package com.scaleup.admin;
+
+public record ResetResponse(String profile, long customers, long products, long inventoryRows) {
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/admin/ResetService.java
+================================================================================
+package com.scaleup.admin;
+
+import com.scaleup.simulation.SimulationSettings;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@ConditionalOnProperty(name = "scaleup.admin.enabled", havingValue = "true")
+public class ResetService {
+
+    private final JdbcTemplate jdbcTemplate;
+    private final SimulationSettings simulationSettings;
+
+    public ResetService(JdbcTemplate jdbcTemplate, SimulationSettings simulationSettings) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.simulationSettings = simulationSettings;
+    }
+
+    @Transactional
+    public ResetResponse reset(SeedProfile profile) {
+        // Empty everything except Flyway's own history table. Ids start from 1 again.
+        jdbcTemplate.execute("""
+                TRUNCATE TABLE order_items, payments, notifications, orders,
+                               inventory, products, customers
+                RESTART IDENTITY CASCADE
+                """);
+
+        jdbcTemplate.update("""
+                INSERT INTO customers (name, email)
+                SELECT 'Customer ' || n, 'customer_' || n || '@example.test'
+                FROM generate_series(1, ?) AS n
+                ORDER BY n
+                """, profile.getCustomers());
+
+        jdbcTemplate.update("""
+                INSERT INTO products (sku, name, category, price)
+                SELECT CASE
+                           WHEN n <= 20 THEN 'HOT-' || lpad(n::text, 3, '0')
+                           WHEN n = 21  THEN 'FLASH-001'
+                           WHEN n = 22  THEN 'ROW-HOT-001'
+                           ELSE 'SKU-' || lpad(n::text, 6, '0')
+                       END,
+                       'Product ' || n,
+                       CASE
+                           WHEN n <= 20 THEN 'hot'
+                           WHEN n = 21  THEN 'flash'
+                           WHEN n = 22  THEN 'hot-row'
+                           ELSE 'category-' || (n % 10)
+                       END,
+                       (5 + ((n * 37) % 1000) / 10.0)::numeric(12,2)
+                FROM generate_series(1, ?) AS n
+                ORDER BY n
+                """, profile.getProducts());
+
+        jdbcTemplate.update("""
+                INSERT INTO inventory (product_id, initial_qty, available_qty, reserved_qty)
+                SELECT id,
+                       CASE WHEN sku = 'FLASH-001' THEN 10 ELSE 1000000 END,
+                       CASE WHEN sku = 'FLASH-001' THEN 10 ELSE 1000000 END,
+                       0
+                FROM products
+                ORDER BY id
+                """);
+
+        // Refresh PostgreSQL's statistics so query plans match the new data.
+        jdbcTemplate.execute("""
+                ANALYZE customers, products, inventory, orders, order_items, payments, notifications
+                """);
+
+        // Every run starts without injected delays or failures.
+        simulationSettings.reset();
+
+        return new ResetResponse(
+                profile.name(),
+                count("customers"),
+                count("products"),
+                count("inventory"));
+    }
+
+    private long count(String table) {
+        Long value = jdbcTemplate.queryForObject("SELECT count(*) FROM " + table, Long.class);
+        return value == null ? 0 : value;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/admin/SeedProfile.java
+================================================================================
+package com.scaleup.admin;
+
+public enum SeedProfile {
+
+    SMALL(100, 500),
+    STANDARD(10_000, 5_000);
+
+    private final int customers;
+    private final int products;
+
+    SeedProfile(int customers, int products) {
+        this.customers = customers;
+        this.products = products;
+    }
+
+    public int getCustomers() {
+        return customers;
+    }
+
+    public int getProducts() {
+        return products;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/admin/VerifyResponse.java
+================================================================================
+package com.scaleup.admin;
+
+import java.util.List;
+import java.util.Map;
+
+public record VerifyResponse(
+        boolean allChecksPassed,
+        String seedChecksum,
+        long inFlightOrders,
+        Map<String, Long> rowCounts,
+        Map<String, Long> ordersByStatus,
+        List<Check> checks) {
+
+    public record Check(String name, boolean passed, long violations) {
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/admin/VerifyService.java
+================================================================================
+package com.scaleup.admin;
+
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+@Service
+@ConditionalOnProperty(name = "scaleup.admin.enabled", havingValue = "true")
+public class VerifyService {
+
+    private static final List<String> TABLES = List.of(
+            "customers", "products", "inventory", "orders",
+            "order_items", "payments", "notifications");
+
+    private final JdbcTemplate jdbcTemplate;
+
+    public VerifyService(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    @Transactional(readOnly = true)
+    public VerifyResponse verify() {
+        Map<String, Long> rowCounts = new LinkedHashMap<>();
+        for (String table : TABLES) {
+            rowCounts.put(table, queryForLong("SELECT count(*) FROM " + table));
+        }
+
+        Map<String, Long> ordersByStatus = new LinkedHashMap<>();
+        List<Map<String, Object>> statusRows = jdbcTemplate.queryForList(
+                "SELECT status, count(*) AS total FROM orders GROUP BY status ORDER BY status");
+        for (Map<String, Object> row : statusRows) {
+            ordersByStatus.put((String) row.get("status"), ((Number) row.get("total")).longValue());
+        }
+        long inFlight = ordersByStatus.getOrDefault("PENDING", 0L)
+                + ordersByStatus.getOrDefault("STOCK_RESERVED", 0L)
+                + ordersByStatus.getOrDefault("PAID", 0L);
+
+        List<VerifyResponse.Check> checks = new ArrayList<>();
+
+        checks.add(check("noNegativeStock",
+                "SELECT count(*) FROM inventory WHERE available_qty < 0 OR reserved_qty < 0"));
+
+        checks.add(check("stockBalances", """
+                SELECT count(*)
+                FROM inventory i
+                LEFT JOIN (SELECT oi.product_id, sum(oi.quantity) AS sold
+                           FROM order_items oi
+                           JOIN orders o ON o.id = oi.order_id
+                           WHERE o.status IN ('PAID', 'CONFIRMED')
+                           GROUP BY oi.product_id) s ON s.product_id = i.product_id
+                WHERE i.initial_qty <> i.available_qty + i.reserved_qty + coalesce(s.sold, 0)
+                """));
+
+        checks.add(check("everyProductHasInventory", """
+                SELECT count(*)
+                FROM products p
+                LEFT JOIN inventory i ON i.product_id = p.id
+                WHERE i.product_id IS NULL
+                """));
+
+        checks.add(check("ordersHaveItems", """
+                SELECT count(*)
+                FROM orders o
+                WHERE NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id)
+                """));
+
+        checks.add(check("orderTotalsMatchItems", """
+                SELECT count(*)
+                FROM orders o
+                JOIN (SELECT order_id, sum(quantity * unit_price) AS total
+                      FROM order_items GROUP BY order_id) t ON t.order_id = o.id
+                WHERE o.total_amount <> t.total
+                """));
+
+        checks.add(check("specialProductsSeeded", """
+                SELECT 2 - count(*)
+                FROM products p
+                JOIN inventory i ON i.product_id = p.id
+                WHERE (p.sku = 'FLASH-001' AND i.initial_qty = 10)
+                   OR (p.sku = 'ROW-HOT-001' AND i.initial_qty = 1000000)
+                """));
+
+        boolean allPassed = checks.stream().allMatch(VerifyResponse.Check::passed);
+
+        return new VerifyResponse(allPassed, seedChecksum(), inFlight,
+                rowCounts, ordersByStatus, checks);
+    }
+
+    private VerifyResponse.Check check(String name, String sql) {
+        long violations = queryForLong(sql);
+        return new VerifyResponse.Check(name, violations == 0, violations);
+    }
+
+    private String seedChecksum() {
+        return jdbcTemplate.queryForObject("""
+                SELECT md5(
+                    coalesce((SELECT string_agg(id || ':' || name || ':' || email, ',' ORDER BY id)
+                              FROM customers), '') || '|' ||
+                    coalesce((SELECT string_agg(id || ':' || sku || ':' || name || ':' || category || ':' || price,
+                                                ',' ORDER BY id)
+                              FROM products), '') || '|' ||
+                    coalesce((SELECT string_agg(product_id || ':' || initial_qty, ',' ORDER BY product_id)
+                              FROM inventory), '')
+                )
+                """, String.class);
+    }
+
+    private long queryForLong(String sql) {
+        Long value = jdbcTemplate.queryForObject(sql, Long.class);
+        return value == null ? 0 : value;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/common/ApiError.java
+================================================================================
+package com.scaleup.common;
+
+import java.time.Instant;
+
+public record ApiError(int status, String error, String message, Instant timestamp) {
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/common/GlobalExceptionHandler.java
+================================================================================
+package com.scaleup.common;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.time.Instant;
+import java.util.stream.Collectors;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(NotFoundException.class)
+    public ResponseEntity<ApiError> handleNotFound(NotFoundException ex) {
+        ApiError body = new ApiError(404, "Not Found", ex.getMessage(), Instant.now());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiError> handleValidation(MethodArgumentNotValidException ex) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+                .map(error -> error.getField() + " " + error.getDefaultMessage())
+                .collect(Collectors.joining("; "));
+        ApiError body = new ApiError(400, "Bad Request", message, Instant.now());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleUnreadableBody(HttpMessageNotReadableException ex) {
+        ApiError body = new ApiError(400, "Bad Request", "Malformed request body", Instant.now());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/common/NotFoundException.java
+================================================================================
+package com.scaleup.common;
+
+public class NotFoundException extends RuntimeException {
+
+    public NotFoundException(String message) {
+        super(message);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/customer/Customer.java
+================================================================================
+package com.scaleup.customer;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+
+import java.time.Instant;
+
+@Entity
+@Table(name = "customers")
+public class Customer {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "name", nullable = false, length = 100)
+    private String name;
+
+    @Column(name = "email", nullable = false, unique = true, length = 150)
+    private String email;
+
+    // Set by the database (DEFAULT now()), so Hibernate only reads it.
+    @Column(name = "created_at", nullable = false, insertable = false, updatable = false)
+    private Instant createdAt;
+
+    protected Customer() {
+        // Required by JPA. Hibernate uses it to create objects when it reads rows.
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/customer/CustomerController.java
+================================================================================
+package com.scaleup.customer;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/customers")
+public class CustomerController {
+
+    private final CustomerService customerService;
+
+    public CustomerController(CustomerService customerService) {
+        this.customerService = customerService;
+    }
+
+    @GetMapping("/{id}")
+    public CustomerResponse getById(@PathVariable Long id) {
+        return customerService.getById(id);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/customer/CustomerRepository.java
+================================================================================
+package com.scaleup.customer;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface CustomerRepository extends JpaRepository<Customer, Long> {
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/customer/CustomerResponse.java
+================================================================================
+package com.scaleup.customer;
+
+import java.time.Instant;
+
+public record CustomerResponse(Long id, String name, String email, Instant createdAt) {
+
+    static CustomerResponse from(Customer customer) {
+        return new CustomerResponse(
+                customer.getId(),
+                customer.getName(),
+                customer.getEmail(),
+                customer.getCreatedAt());
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/customer/CustomerService.java
+================================================================================
+package com.scaleup.customer;
+
+import com.scaleup.common.NotFoundException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class CustomerService {
+
+    private final CustomerRepository customerRepository;
+
+    public CustomerService(CustomerRepository customerRepository) {
+        this.customerRepository = customerRepository;
+    }
+
+    @Transactional(readOnly = true)
+    public CustomerResponse getById(Long id) {
+        Customer customer = customerRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Customer " + id + " not found"));
+        return CustomerResponse.from(customer);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/inventory/Inventory.java
+================================================================================
+package com.scaleup.inventory;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+
+@Entity
+@Table(name = "inventory")
+public class Inventory {
+
+    // The id is the product id: one inventory row per product. It is assigned, not generated.
+    @Id
+    @Column(name = "product_id")
+    private Long productId;
+
+    @Column(name = "available_qty", nullable = false)
+    private int availableQty;
+
+    @Column(name = "reserved_qty", nullable = false)
+    private int reservedQty;
+
+    protected Inventory() {
+        // Required by JPA.
+    }
+
+    public Long getProductId() {
+        return productId;
+    }
+
+    public int getAvailableQty() {
+        return availableQty;
+    }
+
+    public int getReservedQty() {
+        return reservedQty;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/inventory/InventoryRepository.java
+================================================================================
+package com.scaleup.inventory;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface InventoryRepository extends JpaRepository<Inventory, Long> {
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/inventory/InventoryService.java
+================================================================================
+package com.scaleup.inventory;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class InventoryService {
+
+    private final InventoryRepository inventoryRepository;
+
+    public InventoryService(InventoryRepository inventoryRepository) {
+        this.inventoryRepository = inventoryRepository;
+    }
+
+    @Transactional(readOnly = true)
+    public int getAvailableQuantity(Long productId) {
+        return inventoryRepository.findById(productId)
+                .map(Inventory::getAvailableQty)
+                .orElse(0);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/notification/NotificationFailedException.java
+================================================================================
+package com.scaleup.notification;
+
+public class NotificationFailedException extends RuntimeException {
+
+    public NotificationFailedException(String message) {
+        super(message);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/notification/NotificationSender.java
+================================================================================
+package com.scaleup.notification;
+
+public interface NotificationSender {
+
+    // Returns normally if the notification was sent; throws NotificationFailedException if not.
+    void send(Long orderId, String type);
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/notification/SimulatedNotificationSender.java
+================================================================================
+package com.scaleup.notification;
+
+import com.scaleup.simulation.SimulationConfig;
+import com.scaleup.simulation.SimulationSettings;
+import com.scaleup.simulation.SimulationSupport;
+import org.springframework.stereotype.Component;
+
+@Component
+public class SimulatedNotificationSender implements NotificationSender {
+
+    private final SimulationSettings settings;
+    private final SimulationSupport support;
+
+    public SimulatedNotificationSender(SimulationSettings settings, SimulationSupport support) {
+        this.settings = settings;
+        this.support = support;
+    }
+
+    @Override
+    public void send(Long orderId, String type) {
+        SimulationConfig config = settings.get();
+        double roll = support.nextDouble();
+
+        // A failing call still takes its time before the error comes back.
+        support.sleep(config.notificationDelayMs());
+
+        if (roll < config.notificationFailureRate()) {
+            throw new NotificationFailedException(
+                    "Simulated notification failure for order " + orderId);
+        }
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/order/Order.java
+================================================================================
+package com.scaleup.order;
+
+import com.scaleup.customer.Customer;
+import com.scaleup.product.Product;
+import jakarta.persistence.CascadeType;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.Table;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+@Entity
+@Table(name = "orders")
+public class Order {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "customer_id", nullable = false)
+    private Customer customer;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 20)
+    private OrderStatus status;
+
+    @Column(name = "total_amount", nullable = false, precision = 12, scale = 2)
+    private BigDecimal totalAmount;
+
+    // Not used until problem P17 (duplicate orders).
+    @Column(name = "idempotency_key", length = 100)
+    private String idempotencyKey;
+
+    @Column(name = "created_at", nullable = false)
+    private Instant createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
+    @Column(name = "confirmed_at")
+    private Instant confirmedAt;
+
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL)
+    private List<OrderItem> items = new ArrayList<>();
+
+    protected Order() {
+        // Required by JPA.
+    }
+
+    public Order(Customer customer, OrderStatus status, BigDecimal totalAmount) {
+        this.customer = customer;
+        this.status = status;
+        this.totalAmount = totalAmount;
+        Instant now = Instant.now();
+        this.createdAt = now;
+        this.updatedAt = now;
+    }
+
+    public OrderItem addItem(Product product, int quantity, BigDecimal unitPrice) {
+        OrderItem item = new OrderItem(this, product, quantity, unitPrice);
+        items.add(item);
+        return item;
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public Customer getCustomer() {
+        return customer;
+    }
+
+    public OrderStatus getStatus() {
+        return status;
+    }
+
+    public BigDecimal getTotalAmount() {
+        return totalAmount;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public Instant getConfirmedAt() {
+        return confirmedAt;
+    }
+
+    public List<OrderItem> getItems() {
+        return items;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/order/OrderItem.java
+================================================================================
+package com.scaleup.order;
+
+import com.scaleup.product.Product;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Table;
+
+import java.math.BigDecimal;
+
+@Entity
+@Table(name = "order_items")
+public class OrderItem {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "order_id", nullable = false)
+    private Order order;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "product_id", nullable = false)
+    private Product product;
+
+    @Column(name = "quantity", nullable = false)
+    private int quantity;
+
+    @Column(name = "unit_price", nullable = false, precision = 12, scale = 2)
+    private BigDecimal unitPrice;
+
+    protected OrderItem() {
+        // Required by JPA.
+    }
+
+    // Package-private: items are created through Order.addItem(...).
+    OrderItem(Order order, Product product, int quantity, BigDecimal unitPrice) {
+        this.order = order;
+        this.product = product;
+        this.quantity = quantity;
+        this.unitPrice = unitPrice;
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public Order getOrder() {
+        return order;
+    }
+
+    public Product getProduct() {
+        return product;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+
+    public BigDecimal getUnitPrice() {
+        return unitPrice;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/order/OrderRepository.java
+================================================================================
+package com.scaleup.order;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface OrderRepository extends JpaRepository<Order, Long> {
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/order/OrderStatus.java
+================================================================================
+package com.scaleup.order;
+
+public enum OrderStatus {
+    PENDING,         // accepted but not processed yet (asynchronous versions)
+    STOCK_RESERVED,  // stock is reserved, payment not done yet
+    PAID,            // payment succeeded, notification not done yet
+    CONFIRMED,       // everything succeeded
+    PAYMENT_FAILED,  // payment declined, stock released
+    CANCELLED        // reserved for later waves
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/payment/PaymentGateway.java
+================================================================================
+package com.scaleup.payment;
+
+import java.math.BigDecimal;
+
+public interface PaymentGateway {
+
+    PaymentOutcome charge(Long orderId, BigDecimal amount);
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/payment/PaymentOutcome.java
+================================================================================
+package com.scaleup.payment;
+
+public enum PaymentOutcome {
+    SUCCESS,
+    DECLINED,
+    TIMEOUT,
+    ERROR
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/payment/SimulatedPaymentGateway.java
+================================================================================
+package com.scaleup.payment;
+
+import com.scaleup.simulation.SimulationConfig;
+import com.scaleup.simulation.SimulationSettings;
+import com.scaleup.simulation.SimulationSupport;
+import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
+
+@Component
+public class SimulatedPaymentGateway implements PaymentGateway {
+
+    private final SimulationSettings settings;
+    private final SimulationSupport support;
+
+    public SimulatedPaymentGateway(SimulationSettings settings, SimulationSupport support) {
+        this.settings = settings;
+        this.support = support;
+    }
+
+    @Override
+    public PaymentOutcome charge(Long orderId, BigDecimal amount) {
+        SimulationConfig config = settings.get();
+
+        // One draw decides the outcome: first slice = timeout, next slice = declined, rest = success.
+        double roll = support.nextDouble();
+
+        if (roll < config.paymentTimeoutRate()) {
+            support.sleep(config.paymentTimeoutMs());
+            return PaymentOutcome.TIMEOUT;
+        }
+
+        support.sleep(config.paymentDelayMs());
+
+        if (roll < config.paymentTimeoutRate() + config.paymentDeclineRate()) {
+            return PaymentOutcome.DECLINED;
+        }
+        return PaymentOutcome.SUCCESS;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/product/Product.java
+================================================================================
+package com.scaleup.product;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+
+import java.math.BigDecimal;
+
+@Entity
+@Table(name = "products")
+public class Product {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "sku", nullable = false, unique = true, length = 50)
+    private String sku;
+
+    @Column(name = "name", nullable = false, length = 150)
+    private String name;
+
+    @Column(name = "category", nullable = false, length = 50)
+    private String category;
+
+    @Column(name = "price", nullable = false, precision = 12, scale = 2)
+    private BigDecimal price;
+
+    @Column(name = "active", nullable = false)
+    private boolean active;
+
+    protected Product() {
+        // Required by JPA.
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public String getSku() {
+        return sku;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public String getCategory() {
+        return category;
+    }
+
+    public BigDecimal getPrice() {
+        return price;
+    }
+
+    public boolean isActive() {
+        return active;
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/product/ProductController.java
+================================================================================
+package com.scaleup.product;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/products")
+public class ProductController {
+
+    private final ProductService productService;
+
+    public ProductController(ProductService productService) {
+        this.productService = productService;
+    }
+
+    @GetMapping("/{id}")
+    public ProductResponse getById(@PathVariable Long id) {
+        return productService.getById(id);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/product/ProductRepository.java
+================================================================================
+package com.scaleup.product;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ProductRepository extends JpaRepository<Product, Long> {
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/product/ProductResponse.java
+================================================================================
+package com.scaleup.product;
+
+import java.math.BigDecimal;
+
+public record ProductResponse(Long id, String sku, String name, String category,
+                              BigDecimal price, boolean active, int availableQuantity) {
+
+    static ProductResponse from(Product product, int availableQuantity) {
+        return new ProductResponse(
+                product.getId(),
+                product.getSku(),
+                product.getName(),
+                product.getCategory(),
+                product.getPrice(),
+                product.isActive(),
+                availableQuantity);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/product/ProductService.java
+================================================================================
+package com.scaleup.product;
+
+import com.scaleup.common.NotFoundException;
+import com.scaleup.inventory.InventoryService;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class ProductService {
+
+    private final ProductRepository productRepository;
+    private final InventoryService inventoryService;
+
+    public ProductService(ProductRepository productRepository, InventoryService inventoryService) {
+        this.productRepository = productRepository;
+        this.inventoryService = inventoryService;
+    }
+
+    @Transactional(readOnly = true)
+    public ProductResponse getById(Long id) {
+        Product product = productRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Product " + id + " not found"));
+        int available = inventoryService.getAvailableQuantity(id);
+        return ProductResponse.from(product, available);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/ScaleupNormalApplication.java
+================================================================================
+package com.scaleup;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class ScaleupNormalApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(ScaleupNormalApplication.class, args);
+	}
+
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/simulation/SimulationConfig.java
+================================================================================
+package com.scaleup.simulation;
+
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Min;
+
+public record SimulationConfig(
+        @Min(0) long paymentDelayMs,
+        @DecimalMin("0.0") @DecimalMax("1.0") double paymentDeclineRate,
+        @DecimalMin("0.0") @DecimalMax("1.0") double paymentTimeoutRate,
+        @Min(0) long paymentTimeoutMs,
+        @Min(0) long notificationDelayMs,
+        @DecimalMin("0.0") @DecimalMax("1.0") double notificationFailureRate,
+        long randomSeed) {
+
+    public static SimulationConfig defaults() {
+        return new SimulationConfig(0, 0.0, 0.0, 3000, 0, 0.0, 12345);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/simulation/SimulationController.java
+================================================================================
+package com.scaleup.simulation;
+
+import jakarta.validation.Valid;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/admin/simulation")
+@ConditionalOnProperty(name = "scaleup.admin.enabled", havingValue = "true")
+public class SimulationController {
+
+    private final SimulationSettings settings;
+
+    public SimulationController(SimulationSettings settings) {
+        this.settings = settings;
+    }
+
+    @GetMapping
+    public SimulationConfig get() {
+        return settings.get();
+    }
+
+    @PutMapping
+    public SimulationConfig update(@Valid @RequestBody SimulationConfig config) {
+        settings.update(config);
+        return settings.get();
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/simulation/SimulationSettings.java
+================================================================================
+package com.scaleup.simulation;
+
+import org.springframework.stereotype.Component;
+
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+@Component
+public class SimulationSettings {
+
+    private final AtomicReference<SimulationConfig> current =
+            new AtomicReference<>(SimulationConfig.defaults());
+
+    // Increases on every update or reset, so others can tell that the settings were re-applied.
+    private final AtomicLong version = new AtomicLong();
+
+    public SimulationConfig get() {
+        return current.get();
+    }
+
+    public long version() {
+        return version.get();
+    }
+
+    public void update(SimulationConfig config) {
+        current.set(config);
+        version.incrementAndGet();
+    }
+
+    public void reset() {
+        current.set(SimulationConfig.defaults());
+        version.incrementAndGet();
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/java/com/scaleup/simulation/SimulationSupport.java
+================================================================================
+package com.scaleup.simulation;
+
+import org.springframework.stereotype.Component;
+
+import java.util.Random;
+
+@Component
+public class SimulationSupport {
+
+    private final SimulationSettings settings;
+    private Random random;
+    private long seenVersion;
+
+    public SimulationSupport(SimulationSettings settings) {
+        this.settings = settings;
+        this.seenVersion = settings.version();
+        this.random = new Random(settings.get().randomSeed());
+    }
+
+    // A number from 0.0 up to (not including) 1.0.
+    // The sequence starts again whenever the settings are updated or reset.
+    public synchronized double nextDouble() {
+        long currentVersion = settings.version();
+        if (currentVersion != seenVersion) {
+            seenVersion = currentVersion;
+            random = new Random(settings.get().randomSeed());
+        }
+        return random.nextDouble();
+    }
+
+    // Blocks the calling thread, like a real network call that waits for an answer.
+    public void sleep(long millis) {
+        if (millis <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Simulated call was interrupted", e);
+        }
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/main/resources/application.properties
+================================================================================
+spring.application.name=scaleup-normal
+server.port=8080
+
+# Loads application-local.properties (database user and password, not committed)
+spring.profiles.active=local
+
+# Lab-only admin endpoints (reset, verify, simulation). Set to false outside the lab.
+scaleup.admin.enabled=true
+
+# Database connection
+spring.datasource.url=jdbc:postgresql://localhost:5432/scaleup_db
+
+# Connection pool: fixed and visible so it cannot silently differ between projects
+spring.datasource.hikari.pool-name=scaleup-pool
+spring.datasource.hikari.maximum-pool-size=10
+
+# JPA / Hibernate: the schema comes from Flyway; Hibernate only checks it matches the entities
+spring.jpa.hibernate.ddl-auto=validate
+spring.jpa.open-in-view=false
+spring.jpa.show-sql=false
+spring.jpa.properties.hibernate.generate_statistics=false
+
+# Actuator and Micrometer
+management.endpoints.web.exposure.include=health,info,metrics
+management.endpoint.health.show-details=always
+management.metrics.tags.application=${spring.application.name}
+management.metrics.distribution.percentiles.http.server.requests=0.5,0.95,0.99
+server.tomcat.mbeanregistry.enabled=true
+
+================================================================================
+FILE: scaleup-normal/src/main/resources/db/migration/V1__create_core_tables.sql
+================================================================================
+-- V1: core tables for the ScaleUp order processing lab.
+-- Deliberately NOT created here (they are experiment variables):
+--   index on orders (customer_id, status)       -> P04 adds it as the fix
+--   unique orders (idempotency_key)             -> P17 adds it as the fix
+--   unique notifications (order_id, type)       -> P18 adds it as the fix
+
+CREATE TABLE customers (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name        VARCHAR(100)  NOT NULL,
+    email       VARCHAR(150)  NOT NULL UNIQUE,
+    created_at  TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+
+CREATE TABLE products (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    sku         VARCHAR(50)   NOT NULL UNIQUE,
+    name        VARCHAR(150)  NOT NULL,
+    category    VARCHAR(50)   NOT NULL,
+    price       NUMERIC(12,2) NOT NULL CHECK (price >= 0),
+    active      BOOLEAN       NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+
+CREATE TABLE inventory (
+    product_id    BIGINT PRIMARY KEY REFERENCES products (id),
+    initial_qty   INTEGER NOT NULL CHECK (initial_qty >= 0),
+    available_qty INTEGER NOT NULL CHECK (available_qty >= 0),
+    reserved_qty  INTEGER NOT NULL DEFAULT 0 CHECK (reserved_qty >= 0),
+    version       BIGINT  NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE orders (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    customer_id     BIGINT NOT NULL REFERENCES customers (id),
+    status          VARCHAR(20) NOT NULL CHECK (status IN
+                    ('PENDING','STOCK_RESERVED','PAID','CONFIRMED','PAYMENT_FAILED','CANCELLED')),
+    total_amount    NUMERIC(12,2) NOT NULL CHECK (total_amount >= 0),
+    idempotency_key VARCHAR(100),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    confirmed_at    TIMESTAMPTZ
+);
+
+CREATE TABLE order_items (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id    BIGINT NOT NULL REFERENCES orders (id),
+    product_id  BIGINT NOT NULL REFERENCES products (id),
+    quantity    INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price  NUMERIC(12,2) NOT NULL CHECK (unit_price >= 0)
+);
+CREATE INDEX idx_order_items_order_id ON order_items (order_id);
+
+CREATE TABLE payments (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id    BIGINT NOT NULL UNIQUE REFERENCES orders (id),
+    status      VARCHAR(20) NOT NULL CHECK (status IN ('SUCCESS','DECLINED','TIMEOUT','ERROR')),
+    amount      NUMERIC(12,2) NOT NULL CHECK (amount >= 0),
+    attempts    INTEGER NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE notifications (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id    BIGINT NOT NULL REFERENCES orders (id),
+    type        VARCHAR(30) NOT NULL,
+    status      VARCHAR(20) NOT NULL CHECK (status IN ('PENDING','SENT','FAILED')),
+    attempts    INTEGER NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at     TIMESTAMPTZ
+);
+
+================================================================================
+FILE: scaleup-normal/src/test/java/com/scaleup/notification/SimulatedNotificationSenderTest.java
+================================================================================
+package com.scaleup.notification;
+
+import com.scaleup.simulation.SimulationConfig;
+import com.scaleup.simulation.SimulationSettings;
+import com.scaleup.simulation.SimulationSupport;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class SimulatedNotificationSenderTest {
+
+    private final SimulationSettings settings = new SimulationSettings();
+    private final SimulatedNotificationSender sender =
+            new SimulatedNotificationSender(settings, new SimulationSupport(settings));
+
+    private static SimulationConfig config(long delayMs, double failureRate) {
+        return new SimulationConfig(0, 0.0, 0.0, 3000, delayMs, failureRate, 12345);
+    }
+
+    // true = the call failed, false = the call worked
+    private List<Boolean> sendMany(int times) {
+        List<Boolean> failed = new ArrayList<>();
+        for (int i = 0; i < times; i++) {
+            try {
+                sender.send(1L, "ORDER_CONFIRMATION");
+                failed.add(false);
+            } catch (NotificationFailedException e) {
+                failed.add(true);
+            }
+        }
+        return failed;
+    }
+
+    @Test
+    void defaultSettingsNeverFail() {
+        assertThat(sendMany(100)).containsOnly(false);
+    }
+
+    @Test
+    void delayIsApplied() {
+        settings.update(config(200, 0.0));
+
+        long start = System.nanoTime();
+        sender.send(1L, "ORDER_CONFIRMATION");
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        // A little below 200 is allowed because timers are not perfectly exact.
+        assertThat(elapsedMs).isGreaterThanOrEqualTo(190);
+    }
+
+    @Test
+    void failureRateOfOneAlwaysFails() {
+        settings.update(config(0, 1.0));
+
+        assertThatThrownBy(() -> sender.send(1L, "ORDER_CONFIRMATION"))
+                .isInstanceOf(NotificationFailedException.class)
+                .hasMessageContaining("order 1");
+    }
+
+    @Test
+    void aFailingCallStillTakesTheDelay() {
+        settings.update(config(200, 1.0));
+
+        long start = System.nanoTime();
+        assertThatThrownBy(() -> sender.send(1L, "ORDER_CONFIRMATION"))
+                .isInstanceOf(NotificationFailedException.class);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertThat(elapsedMs).isGreaterThanOrEqualTo(190);
+    }
+
+    @Test
+    void sameSettingsGiveTheSameSequence() {
+        settings.update(config(0, 0.5));
+        List<Boolean> first = sendMany(20);
+
+        // Applying the settings again restarts the random sequence.
+        settings.update(config(0, 0.5));
+        List<Boolean> second = sendMany(20);
+
+        assertThat(second).isEqualTo(first);
+    }
+
+    @Test
+    void observedFailureShareIsCloseToTheConfiguredRate() {
+        settings.update(config(0, 0.3));
+
+        long failures = sendMany(10_000).stream().filter(failed -> failed).count();
+
+        assertThat(failures).isBetween(2_700L, 3_300L);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/test/java/com/scaleup/payment/SimulatedPaymentGatewayTest.java
+================================================================================
+package com.scaleup.payment;
+
+import com.scaleup.simulation.SimulationConfig;
+import com.scaleup.simulation.SimulationSettings;
+import com.scaleup.simulation.SimulationSupport;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class SimulatedPaymentGatewayTest {
+
+    private final SimulationSettings settings = new SimulationSettings();
+    private final SimulatedPaymentGateway gateway =
+            new SimulatedPaymentGateway(settings, new SimulationSupport(settings));
+
+    private static SimulationConfig config(long delayMs, double declineRate, double timeoutRate, long timeoutMs) {
+        return new SimulationConfig(delayMs, declineRate, timeoutRate, timeoutMs, 0, 0.0, 12345);
+    }
+
+    private List<PaymentOutcome> charge(int times) {
+        List<PaymentOutcome> outcomes = new ArrayList<>();
+        for (int i = 0; i < times; i++) {
+            outcomes.add(gateway.charge(1L, BigDecimal.TEN));
+        }
+        return outcomes;
+    }
+
+    @Test
+    void defaultSettingsAlwaysSucceed() {
+        assertThat(charge(100)).containsOnly(PaymentOutcome.SUCCESS);
+    }
+
+    @Test
+    void delayIsApplied() {
+        settings.update(config(200, 0.0, 0.0, 3000));
+
+        long start = System.nanoTime();
+        PaymentOutcome outcome = gateway.charge(1L, BigDecimal.TEN);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertThat(outcome).isEqualTo(PaymentOutcome.SUCCESS);
+        // A little below 200 is allowed because timers are not perfectly exact.
+        assertThat(elapsedMs).isGreaterThanOrEqualTo(190);
+    }
+
+    @Test
+    void declineRateOfOneAlwaysDeclines() {
+        settings.update(config(0, 1.0, 0.0, 3000));
+
+        assertThat(charge(20)).containsOnly(PaymentOutcome.DECLINED);
+    }
+
+    @Test
+    void timeoutRateOfOneBlocksThenTimesOut() {
+        settings.update(config(0, 0.0, 1.0, 300));
+
+        long start = System.nanoTime();
+        PaymentOutcome outcome = gateway.charge(1L, BigDecimal.TEN);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertThat(outcome).isEqualTo(PaymentOutcome.TIMEOUT);
+        assertThat(elapsedMs).isGreaterThanOrEqualTo(290);
+    }
+
+    @Test
+    void sameSettingsGiveTheSameSequence() {
+        settings.update(config(0, 0.5, 0.0, 3000));
+        List<PaymentOutcome> first = charge(20);
+
+        // Applying the settings again restarts the random sequence.
+        settings.update(config(0, 0.5, 0.0, 3000));
+        List<PaymentOutcome> second = charge(20);
+
+        assertThat(second).isEqualTo(first);
+    }
+
+    @Test
+    void observedDeclineShareIsCloseToTheConfiguredRate() {
+        settings.update(config(0, 0.3, 0.0, 3000));
+
+        long declined = charge(10_000).stream()
+                .filter(outcome -> outcome == PaymentOutcome.DECLINED)
+                .count();
+
+        assertThat(declined).isBetween(2_700L, 3_300L);
+    }
+}
+
+================================================================================
+FILE: scaleup-normal/src/test/java/com/scaleup/ScaleupNormalApplicationTests.java
+================================================================================
+package com.scaleup;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+
+@SpringBootTest
+class ScaleupNormalApplicationTests {
+
+	@Test
+	void contextLoads() {
+	}
+
+}
