@@ -75,6 +75,23 @@ public class Order {
         return item;
     }
 
+    public void markPaid() {
+        this.status = OrderStatus.PAID;
+        this.updatedAt = Instant.now();
+    }
+
+    public void markPaymentFailed() {
+        this.status = OrderStatus.PAYMENT_FAILED;
+        this.updatedAt = Instant.now();
+    }
+
+    public void markConfirmed() {
+        Instant now = Instant.now();
+        this.status = OrderStatus.CONFIRMED;
+        this.confirmedAt = now;
+        this.updatedAt = now;
+    }
+
     public Long getId() {
         return id;
     }

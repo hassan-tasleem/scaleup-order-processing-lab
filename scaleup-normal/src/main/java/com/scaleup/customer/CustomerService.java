@@ -15,8 +15,13 @@ public class CustomerService {
 
     @Transactional(readOnly = true)
     public CustomerResponse getById(Long id) {
-        Customer customer = customerRepository.findById(id)
+        return CustomerResponse.from(getEntityById(id));
+    }
+
+    // For other modules that need the entity itself, for example to link an order to a customer.
+    @Transactional(readOnly = true)
+    public Customer getEntityById(Long id) {
+        return customerRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Customer " + id + " not found"));
-        return CustomerResponse.from(customer);
     }
 }
